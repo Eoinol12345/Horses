@@ -1,0 +1,10 @@
+.env
+*.db
+__pycache__/
+*.pyc
+.idea/
+venv/
+.venv/
+*.pem
+.env.example
+utlis.py
