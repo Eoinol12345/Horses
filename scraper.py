@@ -43,7 +43,7 @@ SPIKE_PCT_THRESHOLD = 0.04  # vol > 4% of total matched in one tick = spike
 def _login() -> str | None:
     global _session_token, _token_expiry
 
-    if _session_token and _token_expiry andutcnow() < _token_expiry:
+    if _session_token and _token_expiry and utcnow() < _token_expiry:
         return _session_token
 
     if not USERNAME or not PASSWORD:
