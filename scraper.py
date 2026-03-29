@@ -701,4 +701,4 @@ def try_scrape() -> bool:
     db.session.commit()
     print(f"[Scraper] {now.strftime('%H:%M:%S')} — {updated} runners "
           f"across {len(catalogues)} markets.")
-    return True
+    return True# force rebuild
