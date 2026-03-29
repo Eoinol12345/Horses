@@ -51,8 +51,8 @@ def _login() -> str | None:
         return None
 
     base_dir  = os.path.dirname(os.path.abspath(__file__))
-    cert_path = os.path.join(base_dir, "client-cert.pem")
-    key_path  = os.path.join(base_dir, "client-key.pem")
+    cert_path = os.environ.get("CERT_PATH") or os.path.join(base_dir, "client-cert.pem")
+    key_path = os.environ.get("KEY_PATH") or os.path.join(base_dir, "client-key.pem")
     use_cert  = os.path.exists(cert_path) and os.path.exists(key_path)
 
     try:
