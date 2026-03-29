@@ -10,8 +10,7 @@ Changes from v1:
   - Added DB indices on high-frequency query columns
   - Fixed EV display (delegates to scoring.calc_ev)
 """
-""
-from datetime import datetime, timedelta, timezone
+
 from utils import utcnow
 
 import json
@@ -43,7 +42,7 @@ class Race(db.Model):
 
     @property
     def minutes_to_off(self) -> int:
-        delta = self.race_time -utcnow()
+        delta = self.race_time - utcnow()
         return max(0, int(delta.total_seconds() / 60))
 
     @property
@@ -106,46 +105,37 @@ class Horse(db.Model):
     jockey       = db.Column(db.String(100))
     trainer      = db.Column(db.String(100))
 
-    # ── Odds tracking ──────────────────────────────────────────────────
-    # CRITICAL FIX: opening_odds is set ONCE at first sight and NEVER updated.
-    # opening_odds_seen_at records when we first saw this runner.
     opening_odds         = db.Column(db.Float, nullable=False)
     opening_odds_seen_at = db.Column(db.DateTime, default=datetime.utcnow)
     previous_odds        = db.Column(db.Float)
     current_odds         = db.Column(db.Float, nullable=False)
-    betfair_sp           = db.Column(db.Float)       # Starting Price — set after race closes
+    betfair_sp           = db.Column(db.Float)
     betfair_selection_id = db.Column(db.Integer)
 
-    # ── Volume ────────────────────────────────────────────────────────
-    matched_volume = db.Column(db.Float, default=0)  # cumulative total matched
-    vol_last_tick  = db.Column(db.Float, default=0)  # delta since last scrape tick
+    matched_volume = db.Column(db.Float, default=0)
+    vol_last_tick  = db.Column(db.Float, default=0)
     volume_spike   = db.Column(db.Boolean, default=False)
-    back_pct       = db.Column(db.Float, default=50.0)  # WOM % (back / (back + lay))
+    back_pct       = db.Column(db.Float, default=50.0)
 
-    # ── Bookmaker comparison (from odds_api.py) ───────────────────────
-    # None = no bookmaker data available yet (API not configured / horse not listed)
-    bookie_best_odds = db.Column(db.Float)  # best price across all bookmakers
+    bookie_best_odds = db.Column(db.Float)
     bookie_updated   = db.Column(db.DateTime)
 
-    # ── Scoring (computed by scoring.py) ──────────────────────────────
-    steam_velocity   = db.Column(db.Float, default=0.0)
-    edge_score       = db.Column(db.Float, default=0.0)
-    conf_score       = db.Column(db.Float, default=0.0)
-    quality_index    = db.Column(db.String(5), default="D")
-    ev_score         = db.Column(db.Float, default=0.0)   # real EV, not % movement
-    is_fake_steam    = db.Column(db.Boolean, default=False)
-    is_drift_reversal= db.Column(db.Boolean, default=False)
-    price_stability  = db.Column(db.Float, default=100.0)
-    spread_width     = db.Column(db.Float, default=0.0)
-    sentiment        = db.Column(db.String(20), default="neutral")
-    market_depth_json= db.Column(db.Text, default="{}")
+    steam_velocity    = db.Column(db.Float, default=0.0)
+    edge_score        = db.Column(db.Float, default=0.0)
+    conf_score        = db.Column(db.Float, default=0.0)
+    quality_index     = db.Column(db.String(5), default="D")
+    ev_score          = db.Column(db.Float, default=0.0)
+    is_fake_steam     = db.Column(db.Boolean, default=False)
+    is_drift_reversal = db.Column(db.Boolean, default=False)
+    price_stability   = db.Column(db.Float, default=100.0)
+    spread_width      = db.Column(db.Float, default=0.0)
+    sentiment         = db.Column(db.String(20), default="neutral")
+    market_depth_json = db.Column(db.Text, default="{}")
 
-    # ── Exchange intelligence (meaningful only with bookie_best_odds) ──
     exchange_lead_score = db.Column(db.Float, default=50.0)
     exchange_behavior   = db.Column(db.String(15), default="FOLLOWING")
     price_divergence    = db.Column(db.Float, default=0.0)
 
-    # ── Horse Performance Intelligence (populated via Racing Post API) ──
     recent_form         = db.Column(db.String(20), default="")
     course_wins         = db.Column(db.Integer, default=0)
     course_runs         = db.Column(db.Integer, default=0)
@@ -164,15 +154,12 @@ class Horse(db.Model):
         order_by="OddsHistory.timestamp"
     )
 
-    # ── DB indices for common query patterns ──────────────────────────
     __table_args__ = (
         Index("ix_horse_race_id",   "race_id"),
         Index("ix_horse_quality",   "quality_index"),
         Index("ix_horse_edge",      "edge_score"),
         Index("ix_horse_selection", "betfair_selection_id"),
     )
-
-    # ── Computed properties ────────────────────────────────────────────
 
     @property
     def pct_drop(self) -> float:
@@ -197,7 +184,7 @@ class Horse(db.Model):
     def is_smart_money_alert(self) -> bool:
         if self.pct_drop <= 12:
             return False
-        cutoff =utcnow() - timedelta(minutes=15)
+        cutoff = utcnow() - timedelta(minutes=15)
         return self.last_updated_time is not None and self.last_updated_time >= cutoff
 
     @property
@@ -207,13 +194,9 @@ class Horse(db.Model):
         except Exception:
             return {}
 
-    # ── Performance score properties ───────────────────────────────────
-
-    @property
     def _win_rate_score(self, wins: int, runs: int) -> float:
-        """Internal helper — convert wins/runs to 0-100 score."""
         if not runs:
-            return 50.0   # no data — neutral, not fake-good
+            return 50.0
         rate = wins / runs
         if rate >= 0.30: return min(100, 80 + (rate - 0.30) * 100)
         if rate >= 0.15: return 55 + (rate - 0.15) * (25 / 0.15)
@@ -349,7 +332,6 @@ class Horse(db.Model):
             "exchange_behavior": self.exchange_behavior or "FOLLOWING",
             "price_divergence":  round(self.price_divergence or 0, 2),
             "has_exchange_edge": self.exchange_behavior == "LEADING",
-            # Performance
             "recent_form":          self.recent_form or "",
             "course_score":         round(self.course_score),
             "distance_score":       round(self.distance_score),
@@ -360,9 +342,8 @@ class Horse(db.Model):
             "smart_money_rating":   round(self.smart_money_rating),
             "condition_label":      self.condition_label,
             "steam_form_alert":     self.steam_form_alert,
-            # Sparkline
-            "sparkline":          self.sparkline_data(),
-            "last_updated":       self.last_updated_time.strftime("%H:%M:%S") if self.last_updated_time else None,
+            "sparkline":            self.sparkline_data(),
+            "last_updated":         self.last_updated_time.strftime("%H:%M:%S") if self.last_updated_time else None,
         }
 
 
@@ -394,9 +375,9 @@ class DailySteamResult(db.Model):
     pct_drop     = db.Column(db.Float)
     edge_score   = db.Column(db.Float)
     quality      = db.Column(db.String(5))
-    bsp          = db.Column(db.Float)         # Betfair SP — set after race settles
-    bsp_verdict  = db.Column(db.String(20))    # early_value / neutral / late_flag
-    result       = db.Column(db.String(20), default="pending")  # won / lost / pending
+    bsp          = db.Column(db.Float)
+    bsp_verdict  = db.Column(db.String(20))
+    result       = db.Column(db.String(20), default="pending")
     created_at   = db.Column(db.DateTime, default=datetime.utcnow)
 
     __table_args__ = (
@@ -405,11 +386,6 @@ class DailySteamResult(db.Model):
 
 
 class StrategyResult(db.Model):
-    """
-    Records every flagged bet for full performance tracking.
-    result and profit are ONLY set by the real Betfair settler.
-    NEVER set by the simulator with random outcomes.
-    """
     __tablename__ = "strategy_results"
 
     id            = db.Column(db.Integer, primary_key=True)
@@ -417,20 +393,20 @@ class StrategyResult(db.Model):
     venue         = db.Column(db.String(100))
     race_time     = db.Column(db.String(10))
     bet_type      = db.Column(db.String(10), default="back")
-    flagged_odds  = db.Column(db.Float)      # odds when flagged
-    bsp_odds      = db.Column(db.Float)      # Betfair Starting Price (real execution)
+    flagged_odds  = db.Column(db.Float)
+    bsp_odds      = db.Column(db.Float)
     stake         = db.Column(db.Float, default=1.0)
-    result        = db.Column(db.String(20), default="pending")  # win / loss / pending
-    profit        = db.Column(db.Float)      # based on bsp_odds, not flagged_odds
+    result        = db.Column(db.String(20), default="pending")
+    profit        = db.Column(db.Float)
     strategy_tag  = db.Column(db.String(50))
     edge_score    = db.Column(db.Float, default=0.0)
     quality_index = db.Column(db.String(5),  default="B")
-    bsp_verdict   = db.Column(db.String(20)) # early_value / neutral / late_flag
-    value_pct     = db.Column(db.Float)      # % value vs BSP
+    bsp_verdict   = db.Column(db.String(20))
+    value_pct     = db.Column(db.Float)
     timestamp     = db.Column(db.DateTime, default=datetime.utcnow)
 
     __table_args__ = (
-        Index("ix_strategy_timestamp",    "timestamp"),
-        Index("ix_strategy_tag",          "strategy_tag"),
-        Index("ix_strategy_horse_name",   "horse_name"),
+        Index("ix_strategy_timestamp",  "timestamp"),
+        Index("ix_strategy_tag",        "strategy_tag"),
+        Index("ix_strategy_horse_name", "horse_name"),
     )

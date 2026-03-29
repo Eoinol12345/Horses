@@ -1,18 +1,8 @@
 """
 scraper.py — SteamIQ Live Betfair Scraper (v2)
-===============================================
-Critical fixes from v1:
-  1. Opening odds set ONCE and never updated (was resetting on each fetch)
-  2. True BSP fetched after race closes (was not stored correctly)
-  3. vol_last_tick = true delta since last tick (was ambiguously named volume_5min)
-  4. Volume spike threshold accounts for time elapsed (not a fixed £50k)
-  5. Up to 20 markets monitored (was hardcoded to 5)
-  6. Bookmaker comparison via odds_api.py (was comparing Betfair to itself)
-  7. All scoring imported from scoring.py (no duplicate logic)
-  8. Dynamic poll interval signalled to scheduler (shorter near off time)
-  9. StrategyResult only populated with result="pending" — settler sets outcome
- 10. exchange_price field removed — exchange_lead uses bookie comparison instead
 """
+
+from utils import utcnow
 
 import os
 import json
@@ -34,8 +24,8 @@ BETTING_URL = "https://api.betfair.com/exchange/betting/rest/v1.0/"
 _session_token = None
 _token_expiry  = None
 
-MAX_MARKETS        = 20    # monitor up to 20 upcoming races at once
-SPIKE_PCT_THRESHOLD = 0.04  # vol > 4% of total matched in one tick = spike
+MAX_MARKETS         = 20
+SPIKE_PCT_THRESHOLD = 0.04
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────
@@ -50,10 +40,25 @@ def _login() -> str | None:
         print("[Scraper] BETFAIR_USERNAME / BETFAIR_PASSWORD not set.")
         return None
 
-    base_dir  = os.path.dirname(os.path.abspath(__file__))
-    cert_path = os.environ.get("CERT_PATH") or os.path.join(base_dir, "client-cert.pem")
-    key_path = os.environ.get("KEY_PATH") or os.path.join(base_dir, "client-key.pem")
-    use_cert  = os.path.exists(cert_path) and os.path.exists(key_path)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Check /etc/secrets/ first (Render Secret Files), then project root (local dev)
+    cert_path = next((p for p in [
+        "/etc/secrets/client-cert.pem",
+        os.path.join(base_dir, "client-cert.pem"),
+    ] if os.path.exists(p)), None)
+
+    key_path = next((p for p in [
+        "/etc/secrets/client-key.pem",
+        os.path.join(base_dir, "client-key.pem"),
+    ] if os.path.exists(p)), None)
+
+    use_cert = cert_path is not None and key_path is not None
+
+    if use_cert:
+        print(f"[Scraper] Using cert: {cert_path}")
+    else:
+        print("[Scraper] No cert files found — trying standard login.")
 
     try:
         if use_cert:
@@ -69,7 +74,7 @@ def _login() -> str | None:
             token = data.get("sessionToken")
             if token and data.get("loginStatus") == "SUCCESS":
                 _session_token = token
-                _token_expiry  =utcnow() + timedelta(hours=3, minutes=30)
+                _token_expiry  = utcnow() + timedelta(hours=3, minutes=30)
                 print("[Scraper] Betfair login OK (certificate)")
                 return _session_token
             print(f"[Scraper] Certificate login failed: {data.get('loginStatus')}")
@@ -85,12 +90,12 @@ def _login() -> str | None:
             )
             if not resp.text or resp.text.strip().startswith("<"):
                 print("[Scraper] Standard login returned HTML — IP not whitelisted. "
-                      "Add client-cert.pem + client-key.pem to project root.")
+                      "Add client-cert.pem + client-key.pem to Render Secret Files.")
                 return None
             data = resp.json()
             if data.get("status") == "SUCCESS" and data.get("token"):
                 _session_token = data["token"]
-                _token_expiry  =utcnow() + timedelta(hours=3, minutes=30)
+                _token_expiry  = utcnow() + timedelta(hours=3, minutes=30)
                 print("[Scraper] Betfair login OK (standard)")
                 return _session_token
             print(f"[Scraper] Standard login failed: {data.get('error')}")
@@ -123,7 +128,7 @@ def _api(token: str, method: str, params: dict) -> list | dict | None:
 # ── Market fetching ───────────────────────────────────────────────────────
 
 def _get_markets(token: str) -> list:
-    now    =utcnow()
+    now    = utcnow()
     cutoff = now + timedelta(hours=6)
     return _api(token, "listMarketCatalogue", {
         "filter": {
@@ -161,12 +166,10 @@ def _get_books(token: str, market_ids: list) -> list:
 # ── History helpers ───────────────────────────────────────────────────────
 
 def _history_tuples(horse: Horse) -> list[tuple]:
-    """Return list of (timestamp, odds) from OddsHistory."""
     return [(h.timestamp, h.odds) for h in horse.history]
 
 
 def _history_odds(horse: Horse) -> list[float]:
-    """Return list of odds values from OddsHistory."""
     return [h.odds for h in horse.history]
 
 
@@ -192,8 +195,7 @@ def _upsert_race(cat: dict) -> Race | None:
         if rt is None:
             return None
 
-        # Skip finished races
-        if rt <utcnow() - timedelta(minutes=5):
+        if rt < utcnow() - timedelta(minutes=5):
             return None
 
         country_code = event.get("countryCode", "GB")
@@ -237,7 +239,6 @@ def _upsert_horse(race: Race, runner: dict, book_runner: dict | None, now: datet
         if not sel_id:
             return None
 
-        # Parse exchange book data
         best_back = best_lay = None
         back_size = lay_size = 0.0
         vol_total = 0.0
@@ -262,7 +263,6 @@ def _upsert_horse(race: Race, runner: dict, book_runner: dict | None, now: datet
         back_pct     = round((back_size / total_wom) * 100, 1)
         spread       = round(best_lay - best_back, 2) if best_lay else 0.0
 
-        # Market depth (top 3 each side)
         ex_data = (book_runner or {}).get("ex", {})
         depth   = {
             "back": [{"odds": b.get("price", 0), "volume": b.get("size", 0)}
@@ -278,14 +278,13 @@ def _upsert_horse(race: Race, runner: dict, book_runner: dict | None, now: datet
             race_id=race.id, betfair_selection_id=sel_id).first()
 
         if horse is None:
-            # First time we see this runner — set opening odds ONCE
             horse = Horse(
                 race_id              = race.id,
                 betfair_selection_id = sel_id,
                 name                 = name,
                 jockey               = jockey,
                 trainer              = trainer,
-                opening_odds         = current_odds,   # SET ONCE — never updated
+                opening_odds         = current_odds,
                 opening_odds_seen_at = now,
                 previous_odds        = current_odds,
                 current_odds         = current_odds,
@@ -302,20 +301,14 @@ def _upsert_horse(race: Race, runner: dict, book_runner: dict | None, now: datet
                 horse_id=horse.id, odds=current_odds, volume=0, timestamp=now))
             return horse
 
-        # ── Update existing horse ──────────────────────────────────────
+        prev_vol  = horse.matched_volume or 0
+        vol_delta = max(0.0, vol_total - prev_vol)
 
-        # Volume delta since last tick
-        prev_vol    = horse.matched_volume or 0
-        vol_delta   = max(0.0, vol_total - prev_vol)
-
-        # Dynamic spike threshold: 4% of total matched (catches large markets fairly)
         spike_threshold = max(15_000, (vol_total or 0) * SPIKE_PCT_THRESHOLD)
-        is_spike   = vol_delta > spike_threshold
+        is_spike  = vol_delta > spike_threshold
+        is_steam  = current_odds < (horse.current_odds or current_odds) - 0.01
+        pct_drop  = horse.pct_drop
 
-        is_steam   = current_odds < (horse.current_odds or current_odds) - 0.01
-        pct_drop   = horse.pct_drop   # uses fixed opening_odds
-
-        # Pull scoring inputs
         hist_tuples = _history_tuples(horse)
         hist_odds   = _history_odds(horse)
         vel         = scoring.calc_velocity(hist_tuples, current_odds, now)
@@ -324,14 +317,13 @@ def _upsert_horse(race: Race, runner: dict, book_runner: dict | None, now: datet
                           horse.opening_odds, hist_odds, current_odds, is_steam)
         mins        = max(0, int((race.race_time - now).total_seconds() / 60))
 
-        # Bookmaker comparison (real data when API configured)
         bookie_odds = get_best_bookie_odds(horse.name)
         fake        = scoring.calc_fake_steam(
                           is_steam, vol_delta, pct_drop,
                           horse.previous_odds or current_odds, current_odds,
                           horse.opening_odds, bookie_odds)
 
-        ev_s        = scoring.calc_ev(horse.opening_odds, current_odds)
+        ev_s = scoring.calc_ev(horse.opening_odds, current_odds)
 
         lead_score, behavior = scoring.calc_exchange_lead(
             exchange_odds=current_odds,
@@ -363,7 +355,6 @@ def _upsert_horse(race: Race, runner: dict, book_runner: dict | None, now: datet
                 else "bearish" if not is_steam and back_pct < 40
                 else "neutral")
 
-        # Write updates
         horse.previous_odds       = horse.current_odds
         horse.current_odds        = current_odds
         horse.matched_volume      = vol_total
@@ -407,9 +398,9 @@ def _upsert_horse(race: Race, runner: dict, book_runner: dict | None, now: datet
 
 def _maybe_alert(horse: Horse, quality: str, edge_s: float, now: datetime):
     if quality in ("A+", "A") and horse.is_smart_money_alert:
-        today   = now.strftime("%Y-%m-%d")
-        is_new  = not DailySteamResult.query.filter_by(
-                      horse_name=horse.name, date=today).first()
+        today  = now.strftime("%Y-%m-%d")
+        is_new = not DailySteamResult.query.filter_by(
+                     horse_name=horse.name, date=today).first()
         if is_new:
             db.session.add(DailySteamResult(
                 date=today, horse_name=horse.name, venue=horse.race.venue,
@@ -423,27 +414,21 @@ def _maybe_alert(horse: Horse, quality: str, edge_s: float, now: datetime):
 
 
 def _maybe_flag_strategy(horse: Horse, quality: str, edge_s: float, now: datetime):
-    """
-    Record a pending StrategyResult for A/A+ signals.
-    result and profit are intentionally left as None / "pending".
-    The settler (_settle_race) will update these with real outcomes.
-    NEVER set a random win/loss outcome here.
-    """
     if quality not in ("A+", "A") or (horse.current_odds or 0) < 1.5:
         return
 
     tags = ["all_bets"]
-    if edge_s >= 70:            tags.append("edge_70")
-    if quality == "A+":         tags.append("quality_A_plus")
-    if horse.volume_spike:      tags.append("volume_spike")
-    if horse.is_drift_reversal: tags.append("drift_reversal")
+    if edge_s >= 70:                         tags.append("edge_70")
+    if quality == "A+":                      tags.append("quality_A_plus")
+    if horse.volume_spike:                   tags.append("volume_spike")
+    if horse.is_drift_reversal:              tags.append("drift_reversal")
     if horse.exchange_behavior == "LEADING": tags.append("exchange_lead")
 
     for tag in tags:
         exists = StrategyResult.query.filter(
-            StrategyResult.horse_name  == horse.name,
+            StrategyResult.horse_name   == horse.name,
             StrategyResult.strategy_tag == tag,
-            StrategyResult.timestamp   >= now - timedelta(hours=2)
+            StrategyResult.timestamp    >= now - timedelta(hours=2)
         ).first()
         if not exists:
             db.session.add(StrategyResult(
@@ -452,10 +437,10 @@ def _maybe_flag_strategy(horse: Horse, quality: str, edge_s: float, now: datetim
                 race_time     = horse.race.race_time.strftime("%H:%M"),
                 bet_type      = "back",
                 flagged_odds  = round(horse.current_odds, 2),
-                bsp_odds      = None,    # set by settler
+                bsp_odds      = None,
                 stake         = 1.0,
                 result        = "pending",
-                profit        = None,    # set by settler
+                profit        = None,
                 strategy_tag  = tag,
                 edge_score    = edge_s,
                 quality_index = quality,
@@ -501,7 +486,6 @@ def _settle_race(token: str, race: Race) -> bool:
         if not winner_ids:
             return False
 
-        # Build BSP lookup: selectionId → BSP
         bsp_map = {}
         for r in runners:
             sel    = r.get("selectionId")
@@ -510,19 +494,17 @@ def _settle_race(token: str, race: Race) -> bool:
             if sel and bsp:
                 bsp_map[sel] = round(float(bsp), 2)
 
-        now   =utcnow()
+        now   = utcnow()
         today = now.strftime("%Y-%m-%d")
 
         print(f"[Settler] Settling {race.venue} {race.race_time.strftime('%H:%M')} "
               f"— {len(winner_ids)} winner(s)")
 
-        # Update BSP on Horse records
         for horse in race.horses:
             bsp = bsp_map.get(horse.betfair_selection_id)
             if bsp:
                 horse.betfair_sp = bsp
 
-        # Settle DailySteamResult
         flagged = DailySteamResult.query.filter_by(
             date=today, venue=race.venue,
             race_time=race.race_time.strftime("%H:%M")
@@ -531,18 +513,15 @@ def _settle_race(token: str, race: Race) -> bool:
         for alert in flagged:
             if alert.result != "pending":
                 continue
-            horse = next((h for h in race.horses if h.name == alert.horse_name), None)
-            bsp   = bsp_map.get(horse.betfair_selection_id) if horse else None
-
-            # Compute BSP value analysis
+            horse    = next((h for h in race.horses if h.name == alert.horse_name), None)
+            bsp      = bsp_map.get(horse.betfair_selection_id) if horse else None
             bsp_info = scoring.calc_bsp_value(alert.flagged_odds, bsp) if bsp else {}
-            alert.bsp        = bsp
+            alert.bsp         = bsp
             alert.bsp_verdict = bsp_info.get("verdict")
 
             if horse and horse.betfair_selection_id in winner_ids:
                 alert.result = "won"
-                print(f"[Settler] ✅ WON  — {alert.horse_name} @ {alert.flagged_odds} "
-                      f"(BSP: {bsp})")
+                print(f"[Settler] ✅ WON  — {alert.horse_name} @ {alert.flagged_odds} (BSP: {bsp})")
                 send_result_alert(
                     horse_name=alert.horse_name, venue=alert.venue,
                     race_time=alert.race_time, result="won",
@@ -550,15 +529,13 @@ def _settle_race(token: str, race: Race) -> bool:
                     edge=alert.edge_score, quality=alert.quality or "A", now=now)
             else:
                 alert.result = "lost"
-                print(f"[Settler] ❌ LOST — {alert.horse_name} @ {alert.flagged_odds} "
-                      f"(BSP: {bsp})")
+                print(f"[Settler] ❌ LOST — {alert.horse_name} @ {alert.flagged_odds} (BSP: {bsp})")
                 send_result_alert(
                     horse_name=alert.horse_name, venue=alert.venue,
                     race_time=alert.race_time, result="lost",
                     odds=alert.flagged_odds, bsp=bsp,
                     edge=alert.edge_score, quality=alert.quality or "A", now=now)
 
-        # Settle StrategyResult — use BSP as execution price (realistic)
         strategy_rows = StrategyResult.query.filter(
             StrategyResult.venue     == race.venue,
             StrategyResult.race_time == race.race_time.strftime("%H:%M"),
@@ -566,18 +543,16 @@ def _settle_race(token: str, race: Race) -> bool:
         ).all()
 
         for row in strategy_rows:
-            horse = next((h for h in race.horses if h.name == row.horse_name), None)
-            bsp   = bsp_map.get(horse.betfair_selection_id) if horse else None
-            row.bsp_odds = bsp
-
-            bsp_info = scoring.calc_bsp_value(row.flagged_odds, bsp) if bsp else {}
+            horse    = next((h for h in race.horses if h.name == row.horse_name), None)
+            bsp      = bsp_map.get(horse.betfair_selection_id) if horse else None
+            row.bsp_odds  = bsp
+            bsp_info      = scoring.calc_bsp_value(row.flagged_odds, bsp) if bsp else {}
             row.bsp_verdict = bsp_info.get("verdict")
             row.value_pct   = bsp_info.get("value_pct")
 
             if horse and horse.betfair_selection_id in winner_ids:
-                # Profit based on BSP minus commission (realistic execution)
                 bsp_used   = bsp or row.flagged_odds
-                net_odds   = bsp_used * (1 - 0.05) - 1   # 5% Betfair commission
+                net_odds   = bsp_used * (1 - 0.05) - 1
                 row.result = "win"
                 row.profit = round(net_odds * row.stake, 2)
             else:
@@ -591,9 +566,9 @@ def _settle_race(token: str, race: Race) -> bool:
 
 
 def _settle_finished_races(token: str):
-    now           =utcnow()
-    cutoff_start  = now - timedelta(minutes=90)
-    cutoff_end    = now - timedelta(minutes=2)
+    now          = utcnow()
+    cutoff_start = now - timedelta(minutes=90)
+    cutoff_end   = now - timedelta(minutes=2)
 
     finished = Race.query.filter(
         Race.race_time >= cutoff_start,
@@ -611,7 +586,7 @@ def _settle_finished_races(token: str):
 
 
 def _clear_past_races():
-    cutoff =utcnow() - timedelta(minutes=90)
+    cutoff = utcnow() - timedelta(minutes=90)
     old    = Race.query.filter(Race.race_time < cutoff).all()
     for r in old:
         db.session.delete(r)
@@ -622,20 +597,10 @@ def _clear_past_races():
 # ── Dynamic poll interval ─────────────────────────────────────────────────
 
 def recommended_poll_interval() -> int:
-    """
-    Return recommended poll interval in seconds based on how close
-    the next race is. Called by the scheduler in app.py.
-
-    < 15 mins to off  → 15s (critical window — catch every tick)
-    15–30 mins to off → 30s
-    30–60 mins to off → 45s
-    > 60 mins         → 60s
-    """
-    now =utcnow()
+    now       = utcnow()
     next_race = Race.query.filter(Race.race_time > now).order_by(Race.race_time.asc()).first()
     if not next_race:
         return 60
-
     mins = next_race.minutes_to_off
     if mins <= 15:  return 15
     if mins <= 30:  return 30
@@ -646,25 +611,13 @@ def recommended_poll_interval() -> int:
 # ── Main entry point ──────────────────────────────────────────────────────
 
 def try_scrape() -> bool:
-    """
-    Full scrape cycle:
-      1. Refresh bookmaker odds index (rate-limited to 90s internally)
-      2. Settle any finished races with real Betfair results
-      3. Fetch upcoming markets and update live odds
-      4. Clear old races from DB
-    Returns True on success, False if Betfair login fails.
-    """
     token = _login()
     if not token:
         return False
 
-    # Step 1: refresh bookmaker odds index (gracefully skipped if no API key)
     refresh_odds_index()
-
-    # Step 2: settle finished races first
     _settle_finished_races(token)
 
-    # Step 3: fetch upcoming markets
     catalogues = _get_markets(token)
 
     if not catalogues:
@@ -677,7 +630,7 @@ def try_scrape() -> bool:
     books      = _get_books(token, market_ids)
     book_map   = {b["marketId"]: b for b in (books or [])}
 
-    now     =utcnow()
+    now     = utcnow()
     updated = 0
 
     for cat in catalogues:
@@ -696,9 +649,8 @@ def try_scrape() -> bool:
             if h:
                 updated += 1
 
-    # Step 4: clean up old races
     _clear_past_races()
     db.session.commit()
     print(f"[Scraper] {now.strftime('%H:%M:%S')} — {updated} runners "
           f"across {len(catalogues)} markets.")
-    return True# force rebuild
+    return True
