@@ -8,3 +8,4 @@ venv/
 *.pem
 .env.example
 utlis.py
+.venv/
