@@ -133,7 +133,7 @@ def _get_markets(token: str) -> list:
     return _api(token, "listMarketCatalogue", {
         "filter": {
             "eventTypeIds":    ["7"],
-            "marketCountries": ["GB", "IE", "AU"],
+            "marketCountries": ["GB", "IE", "IT"],
             "marketTypeCodes": ["WIN"],
             "marketStartTime": {
                 "from": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
