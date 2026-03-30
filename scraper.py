@@ -144,7 +144,6 @@ def _get_markets(token: str) -> list:
             "MARKET_START_TIME",
             "RUNNER_DESCRIPTION",
             "EVENT",
-            "RUNNER_METADATA",
         ],
         "maxResults": str(MAX_MARKETS),
         "sort": "FIRST_TO_START",
