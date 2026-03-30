@@ -140,12 +140,17 @@ def _get_markets(token: str) -> list:
                 "to":   cutoff.strftime("%Y-%m-%dT%H:%M:%SZ"),
             },
         },
+        # FIX: Removed RUNNER_DESCRIPTION — requires a live (paid) key and
+        # causes 403 on delayed keys when called from a server IP.
+        # Runner names are sourced from the runners[] array returned with EVENT.
         "marketProjection": [
             "MARKET_START_TIME",
-            "RUNNER_DESCRIPTION",
             "EVENT",
         ],
-        "maxResults": str(MAX_MARKETS),
+        # FIX: maxResults must be an integer, not a string.
+        # Betfair's API rejects a string value server-side even if it tolerates
+        # it in some local environments.
+        "maxResults": MAX_MARKETS,
         "sort": "FIRST_TO_START",
     }) or []
 
@@ -417,11 +422,11 @@ def _maybe_flag_strategy(horse: Horse, quality: str, edge_s: float, now: datetim
         return
 
     tags = ["all_bets"]
-    if edge_s >= 70:                         tags.append("edge_70")
-    if quality == "A+":                      tags.append("quality_A_plus")
-    if horse.volume_spike:                   tags.append("volume_spike")
-    if horse.is_drift_reversal:              tags.append("drift_reversal")
-    if horse.exchange_behavior == "LEADING": tags.append("exchange_lead")
+    if edge_s >= 70:                              tags.append("edge_70")
+    if quality == "A+":                           tags.append("quality_A_plus")
+    if horse.volume_spike:                        tags.append("volume_spike")
+    if horse.is_drift_reversal:                   tags.append("drift_reversal")
+    if horse.exchange_behavior == "LEADING":      tags.append("exchange_lead")
 
     for tag in tags:
         exists = StrategyResult.query.filter(

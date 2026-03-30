@@ -38,8 +38,11 @@ def _fetch_horse_racing_odds(region: str = "uk") -> list[dict] | None:
         return cached
 
     try:
+        # FIX: The correct sport key is "horse_racing" not "horse_racing_uk".
+        # "horse_racing_uk" is not a valid endpoint in The Odds API v4
+        # and returns a 404. The regions param already handles UK filtering.
         resp = requests.get(
-            f"{ODDS_API_URL}/sports/horse_racing_uk/odds",
+            f"{ODDS_API_URL}/sports/horse_racing/odds",
             params={
                 "apiKey":     ODDS_API_KEY,
                 "regions":    "uk",
